@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import random
 import threading
@@ -180,6 +181,17 @@ LOCATION_TO_TIER = {
 }
 
 TIER_TO_LOCATION = {tier: location for location, tier in LOCATION_TO_TIER.items()}
+
+VALID_PREDICTION_TIERS = {"hot", "warm", "cold"}
+
+
+def _baseline_confidence(tier: Optional[str]) -> float:
+    tier_normalised = (tier or "").lower()
+    if tier_normalised == "hot":
+        return 0.75
+    if tier_normalised == "warm":
+        return 0.65
+    return 0.55
 
 
 def _stream_event_payload(file_id: str, ev: AccessEvent, counter: int) -> Dict[str, Any]:
@@ -955,18 +967,31 @@ def _update_usage_metrics(file_id: str) -> None:
     except Exception as exc:
         logger.debug("predictive inference failed for %s: %s", file_id, exc)
 
+    if predicted_tier:
+        predicted_tier_candidate = str(predicted_tier).strip().lower()
+        if predicted_tier_candidate not in VALID_PREDICTION_TIERS:
+            predicted_tier = None
+            prediction_confidence = None
+        else:
+            predicted_tier = predicted_tier_candidate
+            if (
+                prediction_confidence is None
+                or not math.isfinite(prediction_confidence)
+                or prediction_confidence <= 0.0
+            ):
+                prediction_confidence = _baseline_confidence(predicted_tier)
+
     if not predicted_tier:
         predicted_tier = decide_tier(
             feature_source.get("access_freq_per_day", 0.0),
             feature_source.get("latency_sla_ms", 9999.0),
         )
-        if prediction_confidence is None:
-            if predicted_tier == "hot":
-                prediction_confidence = 0.75
-            elif predicted_tier == "warm":
-                prediction_confidence = 0.65
-            else:
-                prediction_confidence = 0.55
+        if (
+            prediction_confidence is None
+            or not math.isfinite(prediction_confidence)
+            or prediction_confidence <= 0.0
+        ):
+            prediction_confidence = _baseline_confidence(predicted_tier)
         prediction_source = "rule"
 
     storage_gb_estimate = float(feature_source.get("size_kb", 0.0)) / SIZE_KB_PER_GB
@@ -974,10 +999,16 @@ def _update_usage_metrics(file_id: str) -> None:
         feature_source.get("storage_cost_per_gb", FEATURE_DEFAULTS["storage_cost_per_gb"])
     )
 
+    safe_confidence = float(prediction_confidence or 0.0)
+    if not math.isfinite(safe_confidence):
+        safe_confidence = 0.0
+    else:
+        safe_confidence = min(max(safe_confidence, 0.0), 1.0)
+
     updates.update(
         {
             "predicted_tier": predicted_tier,
-            "prediction_confidence": float(prediction_confidence or 0.0),
+            "prediction_confidence": safe_confidence,
             "prediction_source": prediction_source,
             "storage_gb_estimate": storage_gb_estimate,
             "estimated_monthly_cost": estimated_cost,
