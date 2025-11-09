@@ -250,13 +250,24 @@ class TierPredictor:
             raise RuntimeError("predictor has not been trained")
 
         pred = model.predict(ordered)
-        label = str(pred[0])
+        raw_label = str(pred[0])
+        label = raw_label.strip().lower()
         confidence = 0.0
         if hasattr(model, "predict_proba"):
             try:
                 proba = getattr(model, "predict_proba")(ordered)
                 if isinstance(proba, np.ndarray) and proba.size:
-                    idx = list(getattr(model, "classes_", [])).index(label) if hasattr(model, "classes_") else 0
+                    idx = 0
+                    if hasattr(model, "classes_"):
+                        classes = list(getattr(model, "classes_", []))
+                        try:
+                            idx = classes.index(raw_label)
+                        except ValueError:
+                            lowered = [str(cls).strip().lower() for cls in classes]
+                            try:
+                                idx = lowered.index(label)
+                            except ValueError:
+                                idx = 0
                     confidence = float(proba[0][idx])
             except Exception:
                 confidence = 0.0
